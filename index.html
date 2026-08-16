@@ -25,6 +25,7 @@
                     <option value="commercial_goods_general">Commercial Goods (General)</option>
                     <option value="motorcycle">Motorcycle (Bodaboda)</option>
                     <option value="special_type">Special (Tractor/Crane)</option>
+                    <option value="passenger_carrying">Passenger Carrying (Taxis/Daladala/Bus)</option>
                 </select>
             </div>
 
@@ -40,6 +41,28 @@
             <div>
                 <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Vehicle Value (Sum Insured TZS)</label>
                 <input type="number" id="vehicleValue" value="25000000" class="w-full bg-slate-900 border border-slate-700 rounded p-2 focus:border-emerald-500 text-sm">
+            </div>
+
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Tonnage (for commercial goods, TPO tiering)</label>
+                <input type="number" id="tonnage" value="0" step="0.1" min="0" class="w-full bg-slate-900 border border-slate-700 rounded p-2 focus:border-emerald-500 text-sm">
+            </div>
+
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Passenger Sub-type (for Passenger Carrying vehicles)</label>
+                <select id="subType" class="w-full bg-slate-900 border border-slate-700 rounded p-2 focus:border-emerald-500 text-sm">
+                    <option value="">(select if applicable)</option>
+                    <option value="taxi_tour">Taxi / Tour</option>
+                    <option value="daladala">Daladala</option>
+                    <option value="bus_up_country">Bus (Up Country)</option>
+                    <option value="bus_private">Bus (Private)</option>
+                    <option value="bus_school">Bus (School)</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Seats Count (for passenger vehicles)</label>
+                <input type="number" id="seatsCount" value="0" min="0" class="w-full bg-slate-900 border border-slate-700 rounded p-2 focus:border-emerald-500 text-sm">
             </div>
 
             <hr class="border-slate-700 my-4">
@@ -62,6 +85,10 @@
                     <input type="checkbox" id="addonCarTracker" class="rounded text-emerald-500 focus:ring-0 bg-slate-900 border-slate-700">
                     <span>Car Tracking System Discount (-5%)</span>
                 </label>
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Increased TPPD (TZS) - amount above base 50M</label>
+                    <input type="number" id="addonIncreasedTPPD" value="0" min="0" class="w-full bg-slate-900 border border-slate-700 rounded p-2 focus:border-emerald-500 text-sm">
+                </div>
             </div>
 
             <button onclick="generateLiveBrokerQuote()" class="w-full bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold py-2 rounded transition mt-4">
@@ -112,6 +139,9 @@
                 vehicleClass: document.getElementById('vehicleClass').value,
                 coverType: document.getElementById('coverType').value,
                 vehicleValue: parseFloat(document.getElementById('vehicleValue').value) || 0,
+                tonnage: parseFloat(document.getElementById('tonnage').value) || 0,
+                subType: document.getElementById('subType').value || '',
+                seatsCount: parseInt(document.getElementById('seatsCount').value) || 0,
                 addonExcessBuyBack: document.getElementById('addonExcessBuyBack').checked,
                 addonLossOfUse: document.getElementById('addonLossOfUse').checked,
                 addonGeographical: document.getElementById('addonGeographical').checked,
@@ -119,7 +149,8 @@
                 hasClaimRecord: false, // Default flags for testing integration
                 isTatoaTaboaMember: false,
                 isEligibleFleet: false,
-                addonIncreasedTPPD: 0
+                addonIncreasedTPPD: parseFloat(document.getElementById('addonIncreasedTPPD').value) || 0,
+                carryingPassengers: false
             };
 
             // Execute the calculation blueprint logic function

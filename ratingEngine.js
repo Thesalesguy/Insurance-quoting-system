@@ -14,6 +14,7 @@ function calculateTIRAComprehensiveMotorPremium(inputData) {
         seatsCount,          // Number: for passenger carrying seat loading calculations
         isTatoaTaboaMember,  // Boolean: 5% association discount eligibility
         isEligibleFleet,     // Boolean: 20% fleet discount over 50 vehicles with CR <= 45%
+        subType,             // Added: passenger sub-type (taxi_tour, daladala, bus_up_country, bus_private, bus_school)
         
         // Add-on Covers & Extensions (Page 3 & 4)
         addonExcessBuyBack,  // Boolean: 10% loading on the Own Damage (OD) premium
@@ -88,7 +89,7 @@ function calculateTIRAComprehensiveMotorPremium(inputData) {
         } else if (coverType === 'tpft') {
             finalPremium = Math.max((sumInsured * 0.025) + 150000, 350000); // 2.5% plus baseline TPO
         } else if (coverType === 'tpo') {
-            if (tonnage <= 2) finalPremium = 150000;
+            if ((tonnage || 0) <= 2) finalPremium = 150000;
             else if (tonnage <= 5) finalPremium = 200000;
             else if (tonnage <= 10) finalPremium = 250000;
             else finalPremium = 300000;
@@ -102,7 +103,7 @@ function calculateTIRAComprehensiveMotorPremium(inputData) {
         } else if (coverType === 'tpft') {
             finalPremium = Math.max((sumInsured * 0.030) + 150000, 350000); // 3% plus baseline TPO
         } else if (coverType === 'tpo') {
-            if (tonnage <= 2) finalPremium = 150000;
+            if ((tonnage || 0) <= 2) finalPremium = 150000;
             else if (tonnage <= 5) finalPremium = 200000;
             else if (tonnage <= 10) finalPremium = 250000;
             else finalPremium = 300000;
@@ -136,7 +137,7 @@ function calculateTIRAComprehensiveMotorPremium(inputData) {
     }
     else if (vehicleClass === 'oil_tanker_over_10y') {
         if (coverType === 'comprehensive') { finalPremium = Math.max(sumInsured * 0.08, 2000000); }
-        else if (coverType === 'tpft') { finalPremium = Math.max((sumInsured * 0.04) + 750000, 1500000); 'comprehensive'}
+        else if (coverType === 'tpft') { finalPremium = Math.max((sumInsured * 0.04) + 750000, 1500000); }
         else if (coverType === 'tpo') { finalPremium = 750000; }
     }
 
@@ -187,11 +188,6 @@ function calculateTIRAComprehensiveMotorPremium(inputData) {
 
     // ==========================================
     // 3. ADD-ON COVERS & CONDITIONS LOADING (Page 3-4)
-    // ==========================================
-    let addonPremiumTotal = 0;
-
-    // ==========================================
-    // 3. ADD-ONS & RIDERS CALCULATION
     // ==========================================
     let addonPremiumTotal = 0;
 
@@ -289,5 +285,6 @@ function calculateTIRAComprehensiveMotorPremium(inputData) {
 
 // Module Export for Node/Repository structure Integration
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { calculateTiraMotorPremium: calculateTanzaniaMotorPremium };
+    // Export the actual function name that exists in this file.
+    module.exports = { calculateTIRAComprehensiveMotorPremium };
 }
