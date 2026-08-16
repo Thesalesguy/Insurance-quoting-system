@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TIRA Actuarial Quoting Terminal</title>
+    <!-- Tailwind CSS Engine for sleek design layout -->
+    <script src="https://tailwindcss.com"></script>
+    <!-- Link our core mathematical rule engine script -->
+    <script src="ratingEngine.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-6 font-sans">
+
+    <div class="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8">
+        
+        <!-- SIDE PANEL: Left Column for Broker Input Parameters -->
+        <div class="md:col-span-1 bg-slate-800 p-6 rounded-xl shadow-xl border border-slate-700 space-y-4">
+            <h2 class="text-xl font-bold text-emerald-400 mb-4">Broker Inputs</h2>
+            
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Vehicle Classification</label>
+                <select id="vehicleClass" class="w-full bg-slate-900 border border-slate-700 rounded p-2 focus:border-emerald-500 text-sm">
+                    <option value="private_car">Private Car</option>
+                    <option value="commercial_goods_own">Commercial Goods (Own)</option>
+                    <option value="commercial_goods_general">Commercial Goods (General)</option>
+                    <option value="motorcycle">Motorcycle (Bodaboda)</option>
+                    <option value="special_type">Special (Tractor/Crane)</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Coverage Structure</label>
+                <select id="coverType" class="w-full bg-slate-900 border border-slate-700 rounded p-2 focus:border-emerald-500 text-sm">
+                    <option value="comprehensive">Comprehensive</option>
+                    <option value="tpft">TPFT (Third Party Fire & Theft)</option>
+                    <option value="tpo">TPO (Third Party Only)</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Vehicle Value (Sum Insured TZS)</label>
+                <input type="number" id="vehicleValue" value="25000000" class="w-full bg-slate-900 border border-slate-700 rounded p-2 focus:border-emerald-500 text-sm">
+            </div>
+
+            <hr class="border-slate-700 my-4">
+            <h3 class="text-sm font-bold text-slate-300">Add-on Cover Metrics</h3>
+            
+            <div class="space-y-2 text-sm">
+                <label class="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" id="addonExcessBuyBack" class="rounded text-emerald-500 focus:ring-0 bg-slate-900 border-slate-700">
+                    <span>Excess Buy-Back (10% OD)</span>
+                </label>
+                <label class="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" id="addonLossOfUse" class="rounded text-emerald-500 focus:ring-0 bg-slate-900 border-slate-700">
+                    <span>Loss of Use (Flat TZS 50k)</span>
+                </label>
+                <label class="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" id="addonGeographical" class="rounded text-emerald-500 focus:ring-0 bg-slate-900 border-slate-700">
+                    <span>Geographical Extension (5% OD)</span>
+                </label>
+                <label class="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" id="addonCarTracker" class="rounded text-emerald-500 focus:ring-0 bg-slate-900 border-slate-700">
+                    <span>Car Tracking System Discount (-5%)</span>
+                </label>
+            </div>
+
+            <button onclick="generateLiveBrokerQuote()" class="w-full bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold py-2 rounded transition mt-4">
+                Calculate Premium
+            </button>
+        </div>
+
+        <!-- MAIN PANEL: Right Columns displaying Live Output Calculations -->
+        <div class="md:col-span-2 bg-slate-800 p-6 rounded-xl shadow-xl border border-slate-700 flex flex-col justify-between">
+            <div>
+                <h2 class="text-xl font-bold text-slate-100 mb-6 pb-2 border-b border-slate-700">Premium Valuation Breakdown</h2>
+                
+                <div class="grid grid-cols-2 gap-4 mb-6">
+                    <div class="bg-slate-900/50 p-4 rounded border border-slate-700/50">
+                        <span class="block text-xs font-semibold uppercase tracking-wider text-slate-400">Base Actuarial Premium</span>
+                        <span id="outBase" class="text-xl font-bold text-slate-200">0 TZS</span>
+                    </div>
+                    <div class="bg-slate-900/50 p-4 rounded border border-slate-700/50">
+                        <span class="block text-xs font-semibold uppercase tracking-wider text-slate-400">Total Add-on Loadings</span>
+                        <span id="outAddons" class="text-xl font-bold text-amber-400">0 TZS</span>
+                    </div>
+                </div>
+
+                <div class="bg-emerald-950/40 border border-emerald-500/30 p-6 rounded-xl text-center mb-6">
+                    <span class="block text-xs font-semibold uppercase tracking-wider text-emerald-400 mb-1">Total Payable Premium</span>
+                    <span id="outTotal" class="text-4xl font-black text-emerald-400">0 TZS</span>
+                </div>
+
+                <div class="bg-slate-900 p-4 rounded text-xs space-y-2 border border-slate-700">
+                    <span class="block font-bold text-slate-400 uppercase tracking-wider">TIRA Regulatory Mandate / Audit Trail Logs</span>
+                    <ul id="outLogs" class="list-disc pl-4 text-slate-300 space-y-1">
+                        <li>Awaiting calculation triggers...</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div id="outExcess" class="text-xs text-slate-500 mt-6 italic border-t border-slate-700/50 pt-4">
+                Excess Clause Framework details will populate upon calculation.
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Wire UI components to core rating engine logic pipeline -->
+    <script>
+        function generateLiveBrokerQuote() {
+            const inputPayload = {
+                vehicleClass: document.getElementById('vehicleClass').value,
+                coverType: document.getElementById('coverType').value,
+                vehicleValue: parseFloat(document.getElementById('vehicleValue').value) || 0,
+                addonExcessBuyBack: document.getElementById('addonExcessBuyBack').checked,
+                addonLossOfUse: document.getElementById('addonLossOfUse').checked,
+                addonGeographical: document.getElementById('addonGeographical').checked,
+                addonCarTracker: document.getElementById('addonCarTracker').checked,
+                hasClaimRecord: false, // Default flags for testing integration
+                isTatoaTaboaMember: false,
+                isEligibleFleet: false,
+                addonIncreasedTPPD: 0
+            };
+
+            // Execute the calculation blueprint logic function
+            const result = calculateTIRAComprehensiveMotorPremium(inputPayload);
+
+            if (result.success) {
+                document.getElementById('outBase').innerText = result.summary.calculatedBasePremium.toLocaleString() + " TZS";
+                document.getElementById('outAddons').innerText = result.summary.totalAddonLoadings.toLocaleString() + " TZS";
+                document.getElementById('outTotal').innerText = result.summary.payablePremiumTZS.toLocaleString() + " TZS";
+                document.getElementById('outExcess').innerText = "Excess Mandate Applied: " + result.complianceDetails.excessMandateRule;
+
+                // Flush and print background transaction event logs
+                const logContainer = document.getElementById('outLogs');
+                logContainer.innerHTML = '';
+                if(result.complianceDetails.systemLogs.length === 0) {
+                    logContainer.innerHTML = '<li>Premium verified matching standard baseline minimum structures safely.</li>';
+                } else {
+                    result.complianceDetails.systemLogs.forEach(log => {
+                        logContainer.innerHTML += `<li>${log}</li>`;
+                    });
+                }
+            }
+        }
+        // Initialize basic calculation metrics on viewport compilation loading frames
+        window.onload = generateLiveBrokerQuote;
+    </script>
+</body>
+</html>
