@@ -99,6 +99,24 @@ Invalid input returns `400`:
 { "success": false, "errors": ["vehicleClass is required and must be one of: ..."] }
 ```
 
+## Deploying to production (Render)
+
+This repo includes a `render.yaml` Blueprint that provisions the API as a
+Render web service.
+
+1. Push/merge this repo to `main` (already done if you're reading this on `main`).
+2. In the [Render Dashboard](https://dashboard.render.com), choose **New > Blueprint**
+   and connect the `Thesalesguy/Insurance-quoting-system` GitHub repo. Render will
+   detect `render.yaml` and provision the `insurance-quoting-api` web service
+   automatically (build: `npm ci`, start: `npm start`, health check: `/health`).
+3. Render assigns the `PORT` env var itself — `server.js` already reads it, no
+   config needed.
+4. Every subsequent push to `main` auto-deploys.
+
+This step requires access to a Render account and can't be completed from
+here — connecting the repo and clicking deploy is a one-time manual step for
+whoever owns the Render account.
+
 ## Project structure
 
 ```
