@@ -1,5 +1,6 @@
 const express = require('express');
 const quoteRoutes = require('./routes/quoteRoutes');
+const whatsappRoutes = require('./routes/whatsappRoutes');
 const { sampleQuotes } = require('./data/sampleQuotes');
 
 function createApp() {
@@ -16,6 +17,7 @@ function createApp() {
     });
 
     app.use('/api/v1', quoteRoutes);
+    app.use('/api/v1/whatsapp', whatsappRoutes);
 
     // Malformed JSON bodies land here via express.json()'s parse error.
     app.use((err, req, res, next) => {
