@@ -40,6 +40,12 @@ async function processIncomingMessages(messages) {
 }
 
 function receiveWebhook(req, res) {
+    // TEMPORARY DIAGNOSTIC LOGGING — confirms whether Meta's POST reaches
+    // this service at all. Contains no access tokens/App Secret/credentials;
+    // remove once webhook delivery is confirmed working end-to-end.
+    console.log(`WHATSAPP WEBHOOK POST RECEIVED - ${req.method} ${req.originalUrl}`);
+    console.log('WHATSAPP WEBHOOK PAYLOAD:', JSON.stringify(req.body));
+
     const validation = validateIncomingWebhookPayload(req.body);
 
     if (!validation.valid) {
