@@ -1,4 +1,5 @@
 const test = require('node:test');
+const { mock } = require('node:test');
 const assert = require('node:assert/strict');
 const { createApp } = require('../src/app');
 const {
@@ -6,6 +7,7 @@ const {
     validateIncomingWebhookPayload
 } = require('../src/validators/whatsappValidator');
 const { getOrCreateSession, updateSession, resetSession, SESSION_STATES } = require('../src/services/sessionStore');
+const { classifyWebhookPayload } = require('../src/controllers/whatsappController');
 
 function startServer() {
     const app = createApp();
@@ -166,4 +168,162 @@ test('existing POST /api/v1/quotes behavior is unaffected', async () => {
         assert.equal(res.status, 200);
         assert.equal(body.summary.payablePremiumTZS, 875000);
     });
+});
+
+test('classifyWebhookPayload detects a messages-only payload', () => {
+    const result = classifyWebhookPayload({
+        object: 'whatsapp_business_account',
+        entry: [
+            {
+                changes: [
+                    {
+                        value: {
+                            messages: [{ from: '255700000000', type: 'text', text: { body: 'hi' } }]
+                        }
+                    }
+                ]
+            }
+        ]
+    });
+    assert.equal(result.hasMessages, true);
+    assert.equal(result.hasStatuses, false);
+    assert.equal(result.messages.length, 1);
+    assert.equal(result.statuses.length, 0);
+});
+
+test('classifyWebhookPayload detects a statuses-only payload', () => {
+    const result = classifyWebhookPayload({
+        object: 'whatsapp_business_account',
+        entry: [
+            {
+                changes: [
+                    {
+                        value: {
+                            statuses: [
+                                {
+                                    status: 'failed',
+                                    recipient_id: '255700000000',
+                                    errors: [{ code: 131047 }]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+    });
+    assert.equal(result.hasMessages, false);
+    assert.equal(result.hasStatuses, true);
+    assert.equal(result.statuses[0].status, 'failed');
+    assert.equal(result.statuses[0].recipient_id, '255700000000');
+    assert.equal(result.statuses[0].errors[0].code, 131047);
+});
+
+test('classifyWebhookPayload detects a payload containing both messages and statuses', () => {
+    const result = classifyWebhookPayload({
+        object: 'whatsapp_business_account',
+        entry: [
+            {
+                changes: [
+                    { value: { messages: [{ from: '255700000000', type: 'text', text: { body: 'hi' } }] } },
+                    { value: { statuses: [{ status: 'delivered', recipient_id: '255700000000' }] } }
+                ]
+            }
+        ]
+    });
+    assert.equal(result.hasMessages, true);
+    assert.equal(result.hasStatuses, true);
+});
+
+test('classifyWebhookPayload reports neither for a payload with no entry array', () => {
+    const result = classifyWebhookPayload({ object: 'whatsapp_business_account' });
+    assert.equal(result.hasMessages, false);
+    assert.equal(result.hasStatuses, false);
+    assert.deepEqual(result.messages, []);
+    assert.deepEqual(result.statuses, []);
+});
+
+test('POST /api/v1/whatsapp/webhook logs message details for a messages payload', async (t) => {
+    const logLines = [];
+    t.mock.method(console, 'log', (...args) => {
+        logLines.push(args.join(' '));
+    });
+
+    await withServer(async (baseUrl) => {
+        await fetch(`${baseUrl}/api/v1/whatsapp/webhook`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                object: 'whatsapp_business_account',
+                entry: [
+                    {
+                        changes: [
+                            {
+                                value: {
+                                    messages: [
+                                        { from: '255700000000', type: 'text', text: { body: 'hello' } }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ]
+            })
+        });
+    });
+
+    mock.reset();
+
+    assert.ok(logLines.some((line) => line.includes('messages: true, statuses: false')));
+    assert.ok(
+        logLines.some(
+            (line) => line.includes('from: 255700000000') && line.includes('type: text') && line.includes('text: hello')
+        )
+    );
+});
+
+test('POST /api/v1/whatsapp/webhook logs status details for a statuses payload', async (t) => {
+    const logLines = [];
+    t.mock.method(console, 'log', (...args) => {
+        logLines.push(args.join(' '));
+    });
+
+    await withServer(async (baseUrl) => {
+        await fetch(`${baseUrl}/api/v1/whatsapp/webhook`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                object: 'whatsapp_business_account',
+                entry: [
+                    {
+                        changes: [
+                            {
+                                value: {
+                                    statuses: [
+                                        {
+                                            status: 'failed',
+                                            recipient_id: '255700000000',
+                                            errors: [{ code: 131047 }]
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ]
+            })
+        });
+    });
+
+    mock.reset();
+
+    assert.ok(logLines.some((line) => line.includes('messages: false, statuses: true')));
+    assert.ok(
+        logLines.some(
+            (line) =>
+                line.includes('status: failed') &&
+                line.includes('recipientId: 255700000000') &&
+                line.includes('errorCode: 131047')
+        )
+    );
 });
