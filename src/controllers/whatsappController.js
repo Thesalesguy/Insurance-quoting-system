@@ -1,6 +1,6 @@
 const { validateWebhookVerification, validateIncomingWebhookPayload } = require('../validators/whatsappValidator');
-const { getOrCreateSession, updateSession, SESSION_STATES } = require('../services/sessionStore');
 const whatsappService = require('../services/whatsappService');
+const conversationService = require('../services/conversationService');
 
 /**
  * Diagnostic-only: walks the raw webhook body and separates out any
@@ -73,9 +73,9 @@ function verifyWebhook(req, res) {
 }
 
 /**
- * Placeholder handling for an inbound message: acknowledges the sender so
- * the webhook is visibly "live" end-to-end. The actual quotation
- * conversation flow is built on top of this in a later stage.
+ * Advances each sender's private-car quoting conversation by one turn
+ * (via conversationService, which is the only thing that touches
+ * sessionStore/quoteService here) and sends back the resulting reply.
  */
 async function processIncomingMessages(messages) {
     const outcomes = await Promise.allSettled(
@@ -83,13 +83,10 @@ async function processIncomingMessages(messages) {
             const from = message && message.from;
             if (!from) return;
 
-            updateSession(from, { state: SESSION_STATES.IN_PROGRESS });
-            getOrCreateSession(from);
+            const text = (message.type === 'text' && message.text && message.text.body) || '';
+            const replyText = conversationService.handleIncomingMessage(from, text);
 
-            await whatsappService.sendTextMessage(
-                from,
-                "Thanks for messaging us! Our motor insurance quoting assistant is coming online soon."
-            );
+            await whatsappService.sendTextMessage(from, replyText);
         })
     );
 

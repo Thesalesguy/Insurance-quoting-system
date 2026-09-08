@@ -1,19 +1,17 @@
-const { calculateTIRAComprehensiveMotorPremium } = require('../../ratingEngine');
-const { validateQuoteRequest, VEHICLE_CLASSES, COVER_TYPES, PASSENGER_SUB_TYPES } = require('../validators/quoteValidator');
+const { VEHICLE_CLASSES, COVER_TYPES, PASSENGER_SUB_TYPES } = require('../validators/quoteValidator');
+const quoteService = require('../services/quoteService');
 
 function postQuote(req, res) {
-    const validation = validateQuoteRequest(req.body);
+    const outcome = quoteService.calculateQuote(req.body);
 
-    if (!validation.valid) {
+    if (!outcome.success) {
         return res.status(400).json({
             success: false,
-            errors: validation.errors
+            errors: outcome.errors
         });
     }
 
-    const result = calculateTIRAComprehensiveMotorPremium(validation.data);
-
-    return res.status(200).json(result);
+    return res.status(200).json(outcome.result);
 }
 
 function getMetadata(req, res) {
