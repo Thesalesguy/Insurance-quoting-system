@@ -9,6 +9,12 @@
 const { calculateTIRAComprehensiveMotorPremium } = require('../../ratingEngine');
 const { validateQuoteRequest } = require('../validators/quoteValidator');
 
+// Statutory VAT applied on top of the rating engine's payable premium.
+// Kept here (not in ratingEngine.js) because VAT is a tax overlay, not an
+// actuarial rating formula -- the engine's own payablePremiumTZS is left
+// untouched and still means exactly what it always has (pre-VAT premium).
+const VAT_RATE = 0.18;
+
 /**
  * @param {unknown} rawInput - raw, untrusted quote request fields
  * @returns {{ success: true, result: object } | { success: false, errors: string[] }}
@@ -22,7 +28,23 @@ function calculateQuote(rawInput) {
 
     const result = calculateTIRAComprehensiveMotorPremium(validation.data);
 
-    return { success: true, result };
+    // Round VAT first, then add to the (already rounded) pre-VAT premium,
+    // so the displayed line items always sum exactly to the displayed total.
+    const vatAmount = Math.round(result.summary.payablePremiumTZS * VAT_RATE);
+    const payablePremiumWithVAT = result.summary.payablePremiumTZS + vatAmount;
+
+    return {
+        success: true,
+        result: {
+            ...result,
+            summary: {
+                ...result.summary,
+                vatRate: VAT_RATE,
+                vatAmount,
+                payablePremiumWithVAT
+            }
+        }
+    };
 }
 
-module.exports = { calculateQuote };
+module.exports = { calculateQuote, VAT_RATE };

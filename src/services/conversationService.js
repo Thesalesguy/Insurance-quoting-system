@@ -196,7 +196,9 @@ function buildQuoteMessage(quoteData, engineResult) {
     const basePremium = engineResult.summary.calculatedBasePremium;
     const addonLoadings = engineResult.summary.totalAddonLoadings;
     const discounts = engineResult.summary.totalDiscountsDeducted;
-    const totalPremium = engineResult.summary.payablePremiumTZS;
+    const vatAmount = engineResult.summary.vatAmount;
+    const totalPremiumWithVAT = engineResult.summary.payablePremiumWithVAT;
+    const vatPercent = Math.round(engineResult.summary.vatRate * 100);
     const excessRule = engineResult.complianceDetails.excessMandateRule;
 
     const selectedAddons = buildSelectedAddonsList(quoteData);
@@ -211,7 +213,8 @@ function buildQuoteMessage(quoteData, engineResult) {
         `Optional Covers Selected: ${optionalCoversLine}\n` +
         `Optional Covers Loading: ${formatTZS(addonLoadings)}\n\n` +
         `Discounts: ${formatTZS(discounts)}\n\n` +
-        `TOTAL PREMIUM: ${formatTZS(totalPremium)}\n\n` +
+        `VAT (${vatPercent}%): ${formatTZS(vatAmount)}\n\n` +
+        `TOTAL PREMIUM (incl. VAT): ${formatTZS(totalPremiumWithVAT)}\n\n` +
         'Standard Excess:\n' +
         `${excessRule}\n\n` +
         'Please note: this is a quotation based on the information provided.\n\n' +

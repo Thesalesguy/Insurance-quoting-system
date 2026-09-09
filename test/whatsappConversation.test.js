@@ -270,7 +270,9 @@ test('the real premium calculated by the rating engine is displayed to the custo
     assert.match(reply, /Optional Covers Selected: None selected/);
     assert.match(reply, /Optional Covers Loading: TZS 0/);
     assert.match(reply, /Discounts: TZS 0/);
-    assert.match(reply, /TOTAL PREMIUM: TZS 875,000/);
+    // 875,000 * 18% VAT = 157,500; total with VAT = 1,032,500.
+    assert.match(reply, /VAT \(18%\): TZS 157,500/);
+    assert.match(reply, /TOTAL PREMIUM \(incl\. VAT\): TZS 1,032,500/);
     assert.match(reply, /Standard Excess:/);
     assert.match(reply, /5% of Claim, Min TZS 350,000/);
 });
@@ -590,10 +592,17 @@ test('combination B (real): tracker-only quote matches the real quoteService/rat
     const reply = driveAddons(phone, { tracker: true, lossOfUse: false, excessBuyBack: false, geographical: false, tppdAmount: 0 });
 
     assert.match(reply, new RegExp(`Base Premium: TZS ${expected.summary.calculatedBasePremium.toLocaleString('en-US')}`));
-    assert.match(reply, new RegExp(`TOTAL PREMIUM: TZS ${expected.summary.payablePremiumTZS.toLocaleString('en-US')}`));
+    assert.match(reply, new RegExp(`VAT \\(18%\\): TZS ${expected.summary.vatAmount.toLocaleString('en-US')}`));
+    assert.match(
+        reply,
+        new RegExp(`TOTAL PREMIUM \\(incl\\. VAT\\): TZS ${expected.summary.payablePremiumWithVAT.toLocaleString('en-US')}`)
+    );
     assert.match(reply, /Optional Covers Selected: Car Tracker/);
     // Proves the add-on genuinely changed the result rather than being ignored.
     assert.notEqual(expected.summary.payablePremiumTZS, expected.summary.calculatedBasePremium);
+    // VAT is exactly 18% of the pre-VAT payable premium, rounded.
+    assert.equal(expected.summary.vatAmount, Math.round(expected.summary.payablePremiumTZS * 0.18));
+    assert.equal(expected.summary.payablePremiumWithVAT, expected.summary.payablePremiumTZS + expected.summary.vatAmount);
 });
 
 // C. Loss of Use only
@@ -751,7 +760,13 @@ test('combination G (real): all add-ons enabled matches the real quoteService/ra
         new RegExp(`Optional Covers Loading: TZS ${expected.summary.totalAddonLoadings.toLocaleString('en-US')}`)
     );
     assert.match(reply, new RegExp(`Discounts: TZS ${expected.summary.totalDiscountsDeducted.toLocaleString('en-US')}`));
-    assert.match(reply, new RegExp(`TOTAL PREMIUM: TZS ${expected.summary.payablePremiumTZS.toLocaleString('en-US')}`));
+    assert.match(reply, new RegExp(`VAT \\(18%\\): TZS ${expected.summary.vatAmount.toLocaleString('en-US')}`));
+    assert.match(
+        reply,
+        new RegExp(`TOTAL PREMIUM \\(incl\\. VAT\\): TZS ${expected.summary.payablePremiumWithVAT.toLocaleString('en-US')}`)
+    );
+    assert.equal(expected.summary.vatAmount, Math.round(expected.summary.payablePremiumTZS * 0.18));
+    assert.equal(expected.summary.payablePremiumWithVAT, expected.summary.payablePremiumTZS + expected.summary.vatAmount);
     assert.match(reply, /Car Tracker/);
     assert.match(reply, /Loss of Use/);
     assert.match(reply, /Excess Buy-Back/);
