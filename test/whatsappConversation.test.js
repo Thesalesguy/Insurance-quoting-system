@@ -349,28 +349,90 @@ test('invalid for-hire response re-prompts without advancing', () => {
 
 test('seats question is asked for passenger vehicles and stores seatsCount', () => {
     const phone = freshPhone();
-    send(phone, 'hi', '5', '2', '2', '25000000');
+    // subtype=daladala, cover=comprehensive (option 1) so vehicle value is still collected
+    send(phone, 'hi', '5', '2', '1', '25000000');
     send(phone, '32');
     assert.equal(getSession(phone).quoteData.seatsCount, 32);
 });
 
 test('invalid seat count is rejected', () => {
     const phone = freshPhone();
-    send(phone, 'hi', '5', '2', '2', '25000000');
+    send(phone, 'hi', '5', '2', '1', '25000000');
     const reply = send(phone, 'lots');
     assert.match(reply, /number of passenger seats/i);
     assert.equal(getSession(phone).state, SESSION_STATES.SEATS_COUNT);
+});
+
+test('seats question is asked directly after cover for TPO (vehicle value is skipped)', () => {
+    const phone = freshPhone();
+    const reply = send(phone, 'hi', '5', '2', '2'); // daladala, TPO
+    assert.match(reply, /passenger seats/i);
+    assert.equal(getSession(phone).state, SESSION_STATES.SEATS_COUNT);
+    assert.equal(getSession(phone).quoteData.vehicleValue, 0);
+});
+
+// =======================================================================
+// Vehicle value is only asked when the rating engine actually reads it
+// (comprehensive and tpft, where tpft exists) -- TPO never uses
+// sumInsured in any class, so the question is skipped entirely.
+// =======================================================================
+
+test('vehicle value question is skipped for TPO (private car)', () => {
+    const phone = freshPhone();
+    const reply = send(phone, 'hi', '1', '3'); // private car, TPO
+    assert.doesNotMatch(reply, /current value of the vehicle/i);
+    assert.equal(getSession(phone).quoteData.vehicleValue, 0);
+});
+
+test('vehicle value question is still asked for TPFT', () => {
+    const phone = freshPhone();
+    const reply = send(phone, 'hi', '1', '2'); // private car, TPFT
+    assert.match(reply, /current value of the vehicle/i);
+    assert.equal(getSession(phone).state, SESSION_STATES.VEHICLE_VALUE);
+});
+
+test('vehicle value line is omitted from the confirmation and quote screens for TPO', () => {
+    const phone = freshPhone();
+    const confirmation = send(phone, 'hi', '1', '3', 'no'); // private car, TPO, decline addons -> confirmation
+    assert.equal(getSession(phone).state, SESSION_STATES.CONFIRMATION);
+    assert.doesNotMatch(confirmation, /Vehicle value/i);
+
+    const quote = send(phone, '1'); // confirm and calculate
+    assert.doesNotMatch(quote, /Vehicle Value/);
+});
+
+test('switching from comprehensive back to TPO clears the previously collected vehicle value', () => {
+    const phone = freshPhone();
+    send(phone, 'hi', '1', '1', '25000000'); // comprehensive, value collected
+    assert.equal(getSession(phone).quoteData.vehicleValue, 25000000);
+
+    send(phone, 'back'); // -> back to VEHICLE_VALUE prompt
+    send(phone, 'back'); // -> back to COVER_TYPE prompt
+    assert.equal(getSession(phone).state, SESSION_STATES.COVER_TYPE);
+
+    send(phone, '3'); // switch to TPO
+    assert.equal(getSession(phone).quoteData.coverType, 'tpo');
+    assert.equal(getSession(phone).quoteData.vehicleValue, 0);
+});
+
+test('a real (unmocked) TPO quote never receives a customer-supplied vehicle value, and the engine ignores it', () => {
+    const phone = freshPhone();
+    send(phone, 'hi', '1', '3', 'no'); // private car, TPO, decline addons -> confirmation
+    const reply = send(phone, '1'); // confirm and calculate
+    assert.match(reply, /Premium: TZS 118,000/); // flat 100,000 TPO + 18% VAT, matches ratingEngine.js exactly
+    assert.doesNotMatch(reply, /Vehicle Value/);
 });
 
 // =======================================================================
 // Tonnage (goods vehicles, TPO only)
 // =======================================================================
 
-test('tonnage question is asked only for goods vehicles on TPO', () => {
+test('tonnage question is asked only for goods vehicles on TPO (and vehicle value is skipped for TPO)', () => {
     const phone = freshPhone();
-    const reply = send(phone, 'hi', '4', '1', '3', '20000000');
+    const reply = send(phone, 'hi', '4', '1', '3'); // own goods, TPO -> vehicle value skipped, tonnage asked directly
     assert.match(reply, /carrying capacity in tonnes/i);
     assert.equal(getSession(phone).state, SESSION_STATES.TONNAGE);
+    assert.equal(getSession(phone).quoteData.vehicleValue, 0);
 });
 
 test('tonnage question is NOT asked for goods vehicles on comprehensive', () => {
@@ -381,7 +443,7 @@ test('tonnage question is NOT asked for goods vehicles on comprehensive', () => 
 
 test('invalid tonnage is rejected', () => {
     const phone = freshPhone();
-    send(phone, 'hi', '4', '1', '3', '20000000');
+    send(phone, 'hi', '4', '1', '3'); // own goods, TPO -> tonnage prompt directly
     const reply = send(phone, 'heavy');
     assert.match(reply, /carrying capacity in tonnes/i);
     assert.equal(getSession(phone).state, SESSION_STATES.TONNAGE);
@@ -722,12 +784,13 @@ test('confirming a goods vehicle quote sends the correct tonnage and ownership-d
     });
 
     const phone = freshPhone();
-    send(phone, 'hi', '4', '2', '3', '20000000', '7', 'no'); // general goods, TPO, 7 tonnes, no addons
+    send(phone, 'hi', '4', '2', '3', '7', 'no'); // general goods, TPO (value skipped), 7 tonnes, no addons
     send(phone, '1');
 
     assert.equal(capturedInput.vehicleClass, 'commercial_goods_general');
     assert.equal(capturedInput.coverType, 'tpo');
     assert.equal(capturedInput.tonnage, 7);
+    assert.equal(capturedInput.vehicleValue, 0);
 });
 
 test('confirming a passenger vehicle quote sends the correct subType and seatsCount', (t) => {

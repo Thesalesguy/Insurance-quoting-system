@@ -209,9 +209,12 @@ function buildConfirmationSummary(quoteData) {
         'Please confirm your quotation details:',
         '',
         `Vehicle: ${vehicleLabel}`,
-        `Cover: ${coverLabel}`,
-        `Vehicle value: ${formatTZS(quoteData.vehicleValue)}`
+        `Cover: ${coverLabel}`
     ];
+
+    if (catalog.isVehicleValueRequired(quoteData.coverType)) {
+        lines.push(`Vehicle value: ${formatTZS(quoteData.vehicleValue)}`);
+    }
 
     if (catalog.isForHireQuestionRequired(quoteData.vehicleClass)) {
         lines.push(`Used for hire: ${quoteData.carryingPassengers ? 'Yes' : 'No'}`);
@@ -283,11 +286,15 @@ function buildQuoteMessage(quoteData, engineResult, reference) {
     const coverLabel = catalog.COVER_TYPE_META[quoteData.coverType].label;
     const totalPremiumWithVAT = engineResult.summary.payablePremiumWithVAT;
 
+    const vehicleValueLine = catalog.isVehicleValueRequired(quoteData.coverType)
+        ? `Vehicle Value: ${formatTZS(quoteData.vehicleValue)}\n\n`
+        : '';
+
     return (
         'Your quotation has been calculated.\n\n' +
         `Vehicle: ${vehicleLabel}\n` +
         `Cover: ${coverLabel}\n` +
-        `Vehicle Value: ${formatTZS(quoteData.vehicleValue)}\n\n` +
+        vehicleValueLine +
         `Premium: ${formatTZS(totalPremiumWithVAT)}\n\n` +
         `Quote Reference: ${reference}\n\n` +
         'What would you like to do next?\n\n' +
@@ -569,6 +576,16 @@ function routeMessage(phoneNumber, rawText) {
             addonLossOfUse: false,
             addonGeographical: false
         };
+
+        // TPO ("purely third party") never reads vehicle value in
+        // ratingEngine.js, for any vehicle class -- every tpo branch is
+        // flat, tonnage-tiered, or seat-tiered. Asking for it would ask
+        // the customer for a number the engine is guaranteed to ignore,
+        // so skip the question entirely and pass a safe, inert 0.
+        if (!catalog.isVehicleValueRequired(result.coverType)) {
+            return afterVehicleValue(phoneNumber, session, { ...quoteData, vehicleValue: 0 });
+        }
+
         return goTo(phoneNumber, session, SESSION_STATES.VEHICLE_VALUE, quoteData);
     }
 

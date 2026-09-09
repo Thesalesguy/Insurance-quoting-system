@@ -173,6 +173,19 @@ function isForHireQuestionRequired(vehicleClass) {
     return vehicleClass === 'motorcycle' || vehicleClass === 'three_wheeler';
 }
 
+/**
+ * Vehicle value (sumInsured) is read by every comprehensive formula and by
+ * every tpft formula (where tpft exists) in ratingEngine.js. It is NOT
+ * read anywhere in any class's tpo branch -- those are all flat,
+ * tonnage-tiered, or seat-tiered figures that never multiply by
+ * sumInsured. So for a "purely third-party" (TPO) cover, on any vehicle
+ * class, asking for the vehicle value would ask the customer for a
+ * number the engine is guaranteed to ignore.
+ */
+function isVehicleValueRequired(coverType) {
+    return coverType !== 'tpo';
+}
+
 // ---------------------------------------------------------------------
 // 5. Optional add-on applicability — mirrors the guard conditions in
 // ratingEngine.js's own add-on block exactly, so nothing is offered that
@@ -335,6 +348,7 @@ module.exports = {
     isTonnageQuestionRequired,
     isSeatsQuestionRequired,
     isForHireQuestionRequired,
+    isVehicleValueRequired,
     getApplicableAddons,
     ADDON_LABELS,
     GOODS_OWNERSHIP_OPTIONS,
