@@ -17,6 +17,8 @@
 const sessionStore = require('./sessionStore');
 const quoteService = require('./quoteService');
 const catalog = require('./vehicleCatalog');
+const quoteValidator = require('../validators/quoteValidator');
+const nlu = require('./nlu');
 
 const { SESSION_STATES } = sessionStore;
 
@@ -43,6 +45,10 @@ const MANUAL_REVIEW_MESSAGE =
     'This vehicle requires further underwriting review. We cannot provide an automated quotation for it at this time.';
 
 const NOTHING_TO_GO_BACK_TO_MESSAGE = "There's nothing to go back to yet.";
+
+const UNSUPPORTED_COVER_MESSAGE =
+    'This cover option is not currently available for this vehicle type through automated quotation.\n\n' +
+    'Please choose another cover or speak to an insurance representative.';
 
 function categoryMenuPrompt() {
     return (
@@ -193,6 +199,11 @@ function addonQuestionPrompt(addonField) {
     return `Would you like to add ${catalog.ADDON_LABELS[addonField]}?\n\n1. Yes\n2. No\n\nReply with 1 or 2.`;
 }
 
+function nluConfirmPrompt(quoteData) {
+    const pending = quoteData._pendingFact || {};
+    return `Did you mean: ${pending.label}?\n\n1. Yes\n2. No\n\nReply with 1 or 2.`;
+}
+
 function tppdAmountPrompt() {
     return (
         'What additional TPPD limit would you like, in Tanzanian Shillings?\n\n' +
@@ -270,6 +281,7 @@ function promptFor(state, quoteData) {
         case SESSION_STATES.OPTIONAL_COVERS_GATE: return optionalCoversGatePrompt();
         case SESSION_STATES.ADDON_QUESTION: return addonQuestionPrompt(quoteData._addonQueue[0]);
         case SESSION_STATES.ADDON_TPPD_AMOUNT: return tppdAmountPrompt();
+        case SESSION_STATES.NLU_CONFIRM: return nluConfirmPrompt(quoteData);
         case SESSION_STATES.CONFIRMATION: return buildConfirmationSummary(quoteData);
         default: return null;
     }
@@ -369,43 +381,36 @@ function goTo(phoneNumber, session, newState, quoteDataPatch) {
     return promptFor(newState, quoteData);
 }
 
+/**
+ * The single "what comes after vehicle value" convergence point, used by
+ * both the exact-match menu flow (called after each individual question
+ * is answered) and the NLU missing-information engine (called after
+ * several facts are merged at once). It asks the next required question
+ * that is still unanswered, in the same fixed order the menu flow always
+ * used, and is a no-op skip for anything already known -- which for a
+ * purely menu-driven conversation is always exactly one field (the one
+ * just answered), reproducing the original behavior exactly. See
+ * smartAdvance below, defined once and shared by every call site.
+ */
 function afterVehicleValue(phoneNumber, session, quoteData) {
-    const vc = quoteData.vehicleClass;
-    if (catalog.isForHireQuestionRequired(vc)) {
-        return goTo(phoneNumber, session, SESSION_STATES.PASSENGER_FOR_HIRE, quoteData);
-    }
-    if (catalog.isSeatsQuestionRequired(vc)) {
-        return goTo(phoneNumber, session, SESSION_STATES.SEATS_COUNT, quoteData);
-    }
-    return afterForHireOrSeats(phoneNumber, session, quoteData);
+    return smartAdvance(phoneNumber, session, quoteData);
 }
 
 function afterForHireOrSeats(phoneNumber, session, quoteData) {
-    const vc = quoteData.vehicleClass;
-    if (catalog.isClaimsQuestionRequired(vc, quoteData.subType, quoteData.coverType)) {
-        return goTo(phoneNumber, session, SESSION_STATES.CLAIMS, quoteData);
-    }
-    return afterClaims(phoneNumber, session, { ...quoteData, hasClaimRecord: false });
+    return smartAdvance(phoneNumber, session, quoteData);
 }
 
 function afterClaims(phoneNumber, session, quoteData) {
-    const vc = quoteData.vehicleClass;
-    if (catalog.isTonnageQuestionRequired(vc, quoteData.coverType)) {
-        return goTo(phoneNumber, session, SESSION_STATES.TONNAGE, quoteData);
-    }
-    return afterTonnage(phoneNumber, session, { ...quoteData, tonnage: 0 });
+    return smartAdvance(phoneNumber, session, quoteData);
 }
 
 function afterTonnage(phoneNumber, session, quoteData) {
-    return goTo(phoneNumber, session, SESSION_STATES.OPTIONAL_COVERS_GATE, quoteData);
+    return smartAdvance(phoneNumber, session, quoteData);
 }
 
+/** Used once the customer has explicitly said "yes" to the optional-covers gate -- always asks about whatever add-ons aren't known yet, never the gate itself again. */
 function startAddonQueueOrConfirm(phoneNumber, session, quoteData) {
-    const queue = catalog.getApplicableAddons(quoteData.vehicleClass, quoteData.coverType);
-    if (queue.length === 0) {
-        return goTo(phoneNumber, session, SESSION_STATES.CONFIRMATION, quoteData);
-    }
-    return goTo(phoneNumber, session, SESSION_STATES.ADDON_QUESTION, { ...quoteData, _addonQueue: queue });
+    return queueRemainingAddonsOrConfirm(phoneNumber, session, quoteData);
 }
 
 function advanceAddonQueue(phoneNumber, session, quoteData) {
@@ -416,6 +421,278 @@ function advanceAddonQueue(phoneNumber, session, quoteData) {
         return goTo(phoneNumber, session, SESSION_STATES.CONFIRMATION, finalData);
     }
     return goTo(phoneNumber, session, SESSION_STATES.ADDON_QUESTION, { ...quoteData, _addonQueue: remaining });
+}
+
+// ---------------------------------------------------------------------
+// Phase 3D: natural-language fallback and the "missing information"
+// engine that drives it. This is additive to the flow above -- every
+// exact-match parser in the main router below still runs first and is
+// completely unchanged; the functions here are only ever reached when
+// that structured parsing fails to recognize the customer's reply, so
+// this can never change the behavior of a valid menu answer. Both the
+// menu path and this path converge on the same goTo/history/session
+// machinery, the same catalog applicability rules, and the same
+// quoteService/ratingEngine calculation path -- there is no separate
+// "AI conversation path".
+// ---------------------------------------------------------------------
+
+/**
+ * Merges deterministically-extracted, validated facts into quoteData.
+ * Only HIGH-confidence facts are applied here (MEDIUM facts go through
+ * NLU_CONFIRM first; LOW-confidence signals never reach this function at
+ * all -- they surface only as ambiguities routed to an existing
+ * clarifying question). Every value is re-checked against
+ * quoteValidator's own canonical lists before acceptance, and changing a
+ * field that other answers depend on clears those stale dependents so
+ * they get asked again.
+ */
+function applyExtractedFacts(quoteData, extraction) {
+    let data = { ...quoteData };
+    const order = [
+        'vehicleClass', 'subType', 'coverType', 'vehicleValue', 'hasClaimRecord',
+        'carryingPassengers', 'seatsCount', 'tonnage',
+        'addonLossOfUse', 'addonCarTracker', 'addonExcessBuyBack', 'addonGeographical', 'addonIncreasedTPPD',
+        '_tankerMaterial', 'noExtras'
+    ];
+
+    for (const field of order) {
+        const fact = extraction.facts[field];
+        if (!fact || fact.confidence !== 'high') continue;
+
+        if (field === 'vehicleClass') {
+            if (!quoteValidator.VEHICLE_CLASSES.includes(fact.value)) continue;
+            if (data.vehicleClass !== fact.value) {
+                data = {
+                    ...data,
+                    vehicleClass: fact.value,
+                    subType: undefined,
+                    carryingPassengers: undefined,
+                    seatsCount: undefined,
+                    tonnage: undefined,
+                    hasClaimRecord: undefined
+                };
+            }
+            continue;
+        }
+
+        if (field === 'subType') {
+            if (!quoteValidator.PASSENGER_SUB_TYPES.includes(fact.value)) continue;
+            if (data.subType !== fact.value) {
+                data = { ...data, subType: fact.value, hasClaimRecord: undefined };
+            }
+            continue;
+        }
+
+        if (field === 'coverType') {
+            if (!quoteValidator.COVER_TYPES.includes(fact.value)) continue;
+            // A cover recognized by name isn't necessarily offered for
+            // this vehicle class (e.g. no class with a tpft branch would
+            // accept it for a trailer) -- reject rather than silently
+            // accepting a class/cover pair ratingEngine.js has no branch
+            // for. tryNluFallback checks this ahead of time to give the
+            // same specific "not available" message the menu flow gives.
+            if (data.vehicleClass && !catalog.getValidCoverTypes(data.vehicleClass).includes(fact.value)) continue;
+            if (data.coverType !== fact.value) {
+                data = {
+                    ...data,
+                    coverType: fact.value,
+                    hasClaimRecord: undefined,
+                    addonExcessBuyBack: undefined,
+                    addonLossOfUse: undefined,
+                    addonGeographical: undefined
+                };
+            }
+            continue;
+        }
+
+        if (field === '_tankerMaterial') {
+            data = { ...data, _tankerMaterial: fact.value };
+            continue;
+        }
+
+        if (field === 'noExtras') {
+            if (data.vehicleClass && data.coverType) {
+                const applicable = catalog.getApplicableAddons(data.vehicleClass, data.coverType);
+                const cleared = {};
+                for (const addonField of applicable) {
+                    cleared[addonField] = addonField === 'addonIncreasedTPPD' ? 0 : false;
+                }
+                data = { ...data, ...cleared };
+            }
+            continue;
+        }
+
+        if (['addonLossOfUse', 'addonCarTracker', 'addonExcessBuyBack', 'addonGeographical'].includes(field)) {
+            if (data.vehicleClass && data.coverType && catalog.getApplicableAddons(data.vehicleClass, data.coverType).includes(field)) {
+                data = { ...data, [field]: fact.value };
+            }
+            continue;
+        }
+
+        // vehicleValue, hasClaimRecord, carryingPassengers, seatsCount,
+        // tonnage, addonIncreasedTPPD -- no cross-field guard needed.
+        data = { ...data, [field]: fact.value };
+    }
+
+    return data;
+}
+
+/**
+ * Mirrors afterVehicleValue -> afterForHireOrSeats -> afterClaims ->
+ * afterTonnage, but -- unlike that chain, which is only ever entered
+ * once a question has just been answered -- only asks a question when
+ * the fact is both required AND not already known, so previously
+ * extracted or previously answered facts are never re-asked.
+ */
+function smartAdvance(phoneNumber, session, quoteData) {
+    const vc = quoteData.vehicleClass;
+    const coverType = quoteData.coverType;
+
+    if (catalog.isForHireQuestionRequired(vc) && quoteData.carryingPassengers === undefined) {
+        return goTo(phoneNumber, session, SESSION_STATES.PASSENGER_FOR_HIRE, quoteData);
+    }
+    if (catalog.isSeatsQuestionRequired(vc) && quoteData.seatsCount === undefined) {
+        return goTo(phoneNumber, session, SESSION_STATES.SEATS_COUNT, quoteData);
+    }
+    if (catalog.isClaimsQuestionRequired(vc, quoteData.subType, coverType) && quoteData.hasClaimRecord === undefined) {
+        return goTo(phoneNumber, session, SESSION_STATES.CLAIMS, quoteData);
+    }
+    if (catalog.isTonnageQuestionRequired(vc, coverType) && quoteData.tonnage === undefined) {
+        return goTo(phoneNumber, session, SESSION_STATES.TONNAGE, quoteData);
+    }
+    return smartAddonAdvance(phoneNumber, session, quoteData);
+}
+
+/** Queues whichever applicable add-ons aren't already known yet, or jumps straight to confirmation if none remain. Shared by both the "gate answered yes" path and the NLU skip-ahead path. */
+function queueRemainingAddonsOrConfirm(phoneNumber, session, quoteData) {
+    const applicable = catalog.getApplicableAddons(quoteData.vehicleClass, quoteData.coverType);
+    const unresolved = applicable.filter((field) => quoteData[field] === undefined);
+    if (unresolved.length === 0) {
+        return goTo(phoneNumber, session, SESSION_STATES.CONFIRMATION, { ...quoteData, _addonQueue: undefined });
+    }
+    return goTo(phoneNumber, session, SESSION_STATES.ADDON_QUESTION, { ...quoteData, _addonQueue: unresolved });
+}
+
+/**
+ * Reached by the missing-information engine without the customer having
+ * been asked the optional-covers gate yet. If nothing about add-ons is
+ * known so far, ask the same "would you like any optional covers?" gate
+ * the menu-driven flow always asks first, so both paths present an
+ * identical shape; if the customer already volunteered some add-on
+ * information via free text, skip the gate and ask only what's left.
+ */
+function smartAddonAdvance(phoneNumber, session, quoteData) {
+    const applicable = catalog.getApplicableAddons(quoteData.vehicleClass, quoteData.coverType);
+    const unresolved = applicable.filter((field) => quoteData[field] === undefined);
+    if (unresolved.length > 0 && unresolved.length === applicable.length) {
+        return goTo(phoneNumber, session, SESSION_STATES.OPTIONAL_COVERS_GATE, quoteData);
+    }
+    return queueRemainingAddonsOrConfirm(phoneNumber, session, quoteData);
+}
+
+/**
+ * The "missing information engine": given whatever facts are currently
+ * known (however they got there -- menu answers, NLU extraction, or a
+ * mix), figures out the single next question still required, or jumps
+ * straight to confirmation if nothing is missing. Every decision here is
+ * made with the exact same catalog applicability predicates the
+ * menu-driven chain above uses, so the two paths can never diverge on
+ * what is or isn't required.
+ */
+function advanceFromQuoteData(phoneNumber, session, quoteData) {
+    if (!quoteData.vehicleClass) {
+        if (quoteData._tankerMaterial) {
+            return goTo(phoneNumber, session, SESSION_STATES.OIL_TANKER_YEAR, quoteData);
+        }
+        return goTo(phoneNumber, session, SESSION_STATES.VEHICLE_CATEGORY, quoteData);
+    }
+
+    const data = { ...quoteData, _tankerMaterial: undefined };
+
+    if (data.vehicleClass === 'passenger_carrying' && !data.subType) {
+        return goTo(phoneNumber, session, SESSION_STATES.PASSENGER_SUBTYPE, data);
+    }
+    if (!data.coverType) {
+        return goTo(phoneNumber, session, SESSION_STATES.COVER_TYPE, data);
+    }
+    if (catalog.isVehicleValueRequired(data.coverType)) {
+        if (data.vehicleValue === undefined) {
+            return goTo(phoneNumber, session, SESSION_STATES.VEHICLE_VALUE, data);
+        }
+        return smartAdvance(phoneNumber, session, data);
+    }
+    // TPO never reads sumInsured (see isVehicleValueRequired) -- the
+    // question is skipped entirely, exactly as the exact-match COVER_TYPE
+    // handler does, with the same safe, inert 0 quoteService/the
+    // validator expect a finite vehicleValue regardless of coverType.
+    return smartAdvance(phoneNumber, session, { ...data, vehicleValue: data.vehicleValue ?? 0 });
+}
+
+/**
+ * Called only when the current state's own exact-match parser could not
+ * recognize the customer's reply. Runs the deterministic NLU extractor
+ * over the raw message and, if anything usable was found, merges it and
+ * advances via the missing-information engine; otherwise returns the
+ * original "didn't understand" message for that state unchanged.
+ */
+function tryNluFallback(phoneNumber, session, rawText, fallbackMessage) {
+    const extraction = nlu.extractFacts(rawText, session.quoteData);
+    const hasHighFacts = Object.values(extraction.facts).some((fact) => fact.confidence === 'high');
+    const mediumFacts = Object.entries(extraction.facts).filter(([, fact]) => fact.confidence === 'medium');
+
+    if (!hasHighFacts && extraction.ambiguities.length === 0 && mediumFacts.length === 0) {
+        return fallbackMessage;
+    }
+
+    // A cover recognized by name but not offered for the already-known
+    // vehicle class gets the same specific message the exact-match menu
+    // gives, rather than being silently dropped or misapplied.
+    const coverFact = extraction.facts.coverType;
+    if (
+        coverFact && coverFact.confidence === 'high' &&
+        session.quoteData.vehicleClass &&
+        !catalog.getValidCoverTypes(session.quoteData.vehicleClass).includes(coverFact.value)
+    ) {
+        return UNSUPPORTED_COVER_MESSAGE;
+    }
+
+    // A genuine ambiguity ("truck", "bus", "tanker" with no further
+    // detail) is never guessed -- it is routed to the exact same
+    // clarifying question the menu-driven flow already uses.
+    if (!hasHighFacts && extraction.ambiguities.length > 0) {
+        const ambiguity = extraction.ambiguities[0];
+        if (ambiguity.type === 'goods_vehicle_generic') {
+            return goTo(phoneNumber, session, SESSION_STATES.GOODS_OWNERSHIP, session.quoteData);
+        }
+        if (ambiguity.type === 'bus_generic') {
+            return goTo(phoneNumber, session, SESSION_STATES.PASSENGER_SUBTYPE, session.quoteData);
+        }
+        if (ambiguity.type === 'tanker_generic') {
+            return goTo(phoneNumber, session, SESSION_STATES.OIL_TANKER_CONFIRM, session.quoteData);
+        }
+        if (ambiguity.type === 'trailer_generic') {
+            return goTo(phoneNumber, session, SESSION_STATES.TRAILER_TYPE, session.quoteData);
+        }
+        return fallbackMessage;
+    }
+
+    const merged = applyExtractedFacts(session.quoteData, extraction);
+
+    // A MEDIUM-confidence fact materially affects classification and is
+    // never silently applied -- confirm it with the customer first. Any
+    // HIGH-confidence facts from the same message are still merged in
+    // (e.g. "comprehensive for my car" keeps coverType while asking
+    // about the vehicle type).
+    if (mediumFacts.length > 0 && !merged.vehicleClass) {
+        const [field, fact] = mediumFacts[0];
+        const label = field === 'vehicleClass' ? catalog.getVehicleDisplayLabel(fact.value) : String(fact.value);
+        return goTo(phoneNumber, session, SESSION_STATES.NLU_CONFIRM, {
+            ...merged,
+            _pendingFact: { field, value: fact.value, label }
+        });
+    }
+
+    return advanceFromQuoteData(phoneNumber, session, merged);
 }
 
 // ---------------------------------------------------------------------
@@ -453,7 +730,7 @@ function routeMessage(phoneNumber, rawText) {
 
     if (session.state === SESSION_STATES.VEHICLE_CATEGORY) {
         const category = catalog.parseCategorySelection(rawText);
-        if (!category) return INVALID_CATEGORY_MESSAGE;
+        if (!category) return tryNluFallback(phoneNumber, session, rawText, INVALID_CATEGORY_MESSAGE);
 
         switch (category) {
             case 'PRIVATE_CAR':
@@ -480,7 +757,10 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.GOODS_OWNERSHIP) {
         const vehicleClass = catalog.parseGoodsOwnership(rawText);
         if (!vehicleClass) {
-            return "Please reply with:\n1. Goods belonging to me or my business\n2. Goods belonging to customers or other parties";
+            return tryNluFallback(
+                phoneNumber, session, rawText,
+                "Please reply with:\n1. Goods belonging to me or my business\n2. Goods belonging to customers or other parties"
+            );
         }
         return goTo(phoneNumber, session, SESSION_STATES.COVER_TYPE, { ...session.quoteData, vehicleClass });
     }
@@ -488,7 +768,10 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.PASSENGER_SUBTYPE) {
         const subType = catalog.parsePassengerSubtype(rawText);
         if (!subType) {
-            return `Please reply with one of the numbers shown:\n\n${catalog.buildMenuText(catalog.PASSENGER_SUBTYPE_OPTIONS)}`;
+            return tryNluFallback(
+                phoneNumber, session, rawText,
+                `Please reply with one of the numbers shown:\n\n${catalog.buildMenuText(catalog.PASSENGER_SUBTYPE_OPTIONS)}`
+            );
         }
         return goTo(phoneNumber, session, SESSION_STATES.COVER_TYPE, {
             ...session.quoteData,
@@ -500,7 +783,10 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.TRAILER_TYPE) {
         const vehicleClass = catalog.parseTrailerType(rawText);
         if (!vehicleClass) {
-            return "Please reply with:\n1. Standard trailer\n2. Converted / modified trailer";
+            return tryNluFallback(
+                phoneNumber, session, rawText,
+                "Please reply with:\n1. Standard trailer\n2. Converted / modified trailer"
+            );
         }
         return goTo(phoneNumber, session, SESSION_STATES.COVER_TYPE, { ...session.quoteData, vehicleClass });
     }
@@ -522,7 +808,7 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.OIL_TANKER_MATERIAL) {
         const material = catalog.parseOilTankerMaterial(rawText);
         if (!material) {
-            return 'Please reply with:\n1. Steel\n2. Aluminium';
+            return tryNluFallback(phoneNumber, session, rawText, 'Please reply with:\n1. Steel\n2. Aluminium');
         }
         return goTo(phoneNumber, session, SESSION_STATES.OIL_TANKER_YEAR, { ...session.quoteData, _tankerMaterial: material });
     }
@@ -530,7 +816,10 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.OIL_TANKER_YEAR) {
         const year = parseYear(rawText);
         if (year === null) {
-            return `Please enter the year of manufacture as a 4-digit year.\n\nExample: 2015`;
+            return tryNluFallback(
+                phoneNumber, session, rawText,
+                'Please enter the year of manufacture as a 4-digit year.\n\nExample: 2015'
+            );
         }
         const vehicleClass = catalog.deriveOilTankerClass(session.quoteData._tankerMaterial, year);
         const quoteData = { ...session.quoteData, vehicleClass };
@@ -555,26 +844,33 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.COVER_TYPE) {
         const result = catalog.parseCoverSelection(rawText, session.quoteData.vehicleClass);
         if (result.status === 'unsupported') {
-            return (
-                'This cover option is not currently available for this vehicle type through automated quotation.\n\n' +
-                'Please choose another cover or speak to an insurance representative.'
-            );
+            return UNSUPPORTED_COVER_MESSAGE;
         }
         if (result.status !== 'valid') {
-            return `I didn't recognise that selection.\n\n${coverTypePrompt(session.quoteData.vehicleClass)}`;
+            return tryNluFallback(
+                phoneNumber, session, rawText,
+                `I didn't recognise that selection.\n\n${coverTypePrompt(session.quoteData.vehicleClass)}`
+            );
         }
 
         // Changing cover type must not leave stale comprehensive-only data
         // behind (e.g. a previous claims answer or comprehensive-only
         // add-on selections) if the customer picked a different cover
-        // after going back.
+        // after going back. A field the new cover still needs is reset to
+        // undefined so the missing-information engine (shared with the
+        // NLU path) knows to ask it again; a field the new cover no
+        // longer needs at all is set to its inert false, since it will
+        // never be asked and never read.
+        const nextApplicableAddons = catalog.getApplicableAddons(session.quoteData.vehicleClass, result.coverType);
         const quoteData = {
             ...session.quoteData,
             coverType: result.coverType,
-            hasClaimRecord: false,
-            addonExcessBuyBack: false,
-            addonLossOfUse: false,
-            addonGeographical: false
+            hasClaimRecord: catalog.isClaimsQuestionRequired(session.quoteData.vehicleClass, session.quoteData.subType, result.coverType)
+                ? undefined
+                : false,
+            addonExcessBuyBack: nextApplicableAddons.includes('addonExcessBuyBack') ? undefined : false,
+            addonLossOfUse: nextApplicableAddons.includes('addonLossOfUse') ? undefined : false,
+            addonGeographical: nextApplicableAddons.includes('addonGeographical') ? undefined : false
         };
 
         // TPO ("purely third party") never reads vehicle value in
@@ -592,7 +888,10 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.VEHICLE_VALUE) {
         const vehicleValue = parsePositiveAmount(rawText);
         if (vehicleValue === null) {
-            return 'Please enter the vehicle value as a number in Tanzanian Shillings.\n\nExample: 25,000,000';
+            return tryNluFallback(
+                phoneNumber, session, rawText,
+                'Please enter the vehicle value as a number in Tanzanian Shillings.\n\nExample: 25,000,000'
+            );
         }
         return afterVehicleValue(phoneNumber, session, { ...session.quoteData, vehicleValue });
     }
@@ -600,7 +899,7 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.PASSENGER_FOR_HIRE) {
         const carryingPassengers = catalog.parseYesNo(rawText);
         if (carryingPassengers === null) {
-            return 'Please reply with:\n1. Yes\n2. No';
+            return tryNluFallback(phoneNumber, session, rawText, 'Please reply with:\n1. Yes\n2. No');
         }
         return afterForHireOrSeats(phoneNumber, session, { ...session.quoteData, carryingPassengers });
     }
@@ -608,7 +907,10 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.SEATS_COUNT) {
         const seatsCount = parsePositiveInteger(rawText);
         if (seatsCount === null) {
-            return 'Please enter the number of passenger seats.\n\nExample: 30';
+            return tryNluFallback(
+                phoneNumber, session, rawText,
+                'Please enter the number of passenger seats.\n\nExample: 30'
+            );
         }
         return afterForHireOrSeats(phoneNumber, session, { ...session.quoteData, seatsCount });
     }
@@ -616,7 +918,7 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.CLAIMS) {
         const hasClaimRecord = catalog.parseYesNo(rawText);
         if (hasClaimRecord === null) {
-            return 'Please reply with:\n1. Yes\n2. No';
+            return tryNluFallback(phoneNumber, session, rawText, 'Please reply with:\n1. Yes\n2. No');
         }
         return afterClaims(phoneNumber, session, { ...session.quoteData, hasClaimRecord });
     }
@@ -624,7 +926,10 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.TONNAGE) {
         const tonnage = parsePositiveAmount(rawText);
         if (tonnage === null) {
-            return "Please enter the vehicle's carrying capacity in tonnes.\n\nExample: 5";
+            return tryNluFallback(
+                phoneNumber, session, rawText,
+                "Please enter the vehicle's carrying capacity in tonnes.\n\nExample: 5"
+            );
         }
         return afterTonnage(phoneNumber, session, { ...session.quoteData, tonnage });
     }
@@ -632,7 +937,7 @@ function routeMessage(phoneNumber, rawText) {
     if (session.state === SESSION_STATES.OPTIONAL_COVERS_GATE) {
         const wantsAddons = catalog.parseYesNo(rawText);
         if (wantsAddons === null) {
-            return 'Please reply with:\n1. Yes\n2. No';
+            return tryNluFallback(phoneNumber, session, rawText, 'Please reply with:\n1. Yes\n2. No');
         }
         if (!wantsAddons) {
             return goTo(phoneNumber, session, SESSION_STATES.CONFIRMATION, {
@@ -651,7 +956,7 @@ function routeMessage(phoneNumber, rawText) {
         const field = session.quoteData._addonQueue[0];
         const answer = catalog.parseYesNo(rawText);
         if (answer === null) {
-            return 'Please reply with:\n1. Yes\n2. No';
+            return tryNluFallback(phoneNumber, session, rawText, 'Please reply with:\n1. Yes\n2. No');
         }
 
         if (field === 'addonIncreasedTPPD') {
@@ -693,7 +998,29 @@ function routeMessage(phoneNumber, rawText) {
             sessionStore.updateSession(phoneNumber, { state: SESSION_STATES.VEHICLE_CATEGORY, quoteData: {}, history: [] });
             return categoryMenuPrompt();
         }
-        return `I didn't recognise that option.\n\n${buildConfirmationSummary(session.quoteData)}`;
+        return tryNluFallback(
+            phoneNumber, session, rawText,
+            `I didn't recognise that option.\n\n${buildConfirmationSummary(session.quoteData)}`
+        );
+    }
+
+    if (session.state === SESSION_STATES.NLU_CONFIRM) {
+        const answer = catalog.parseYesNo(rawText);
+        const pending = session.quoteData._pendingFact;
+        if (answer === null) {
+            return 'Please reply with:\n1. Yes\n2. No';
+        }
+        const baseData = { ...session.quoteData, _pendingFact: undefined };
+        if (!answer || !pending) {
+            return goTo(phoneNumber, session, SESSION_STATES.VEHICLE_CATEGORY, baseData);
+        }
+        const confirmed = applyExtractedFacts(baseData, {
+            facts: { [pending.field]: { value: pending.value, confidence: 'high' } },
+            ambiguities: [],
+            unrecognized: [],
+            corrections: []
+        });
+        return advanceFromQuoteData(phoneNumber, session, confirmed);
     }
 
     if (session.state === SESSION_STATES.QUOTE_READY || session.state === SESSION_STATES.AWAITING_NEXT_ACTION) {

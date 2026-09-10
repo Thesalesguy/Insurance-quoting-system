@@ -39,6 +39,10 @@ const SESSION_STATES = Object.freeze({
     ADDON_QUESTION: 'ADDON_QUESTION',
     ADDON_TPPD_AMOUNT: 'ADDON_TPPD_AMOUNT',
 
+    // Phase 3D: natural-language fact extraction asks for confirmation
+    // before accepting a MEDIUM-confidence guess (e.g. a bare "car").
+    NLU_CONFIRM: 'NLU_CONFIRM',
+
     // Confirmation and calculation.
     CONFIRMATION: 'CONFIRMATION',
     CALCULATING: 'CALCULATING',
